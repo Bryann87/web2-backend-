@@ -117,6 +117,25 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 var app = builder.Build();
 
+// Aplicar migraciones automáticamente al iniciar (útil para despliegues)
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AcademiaContext>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    
+    try
+    {
+        logger.LogInformation("Aplicando migraciones de base de datos...");
+        db.Database.Migrate();
+        logger.LogInformation("Migraciones aplicadas correctamente.");
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Error al aplicar migraciones de base de datos.");
+        throw;
+    }
+}
+
 // Configurar el pipeline HTTP
 if (app.Environment.IsDevelopment())
 {
