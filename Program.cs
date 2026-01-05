@@ -37,8 +37,11 @@ if (builder.Environment.IsProduction() && OperatingSystem.IsWindows())
 }
 
 // Configurar DbContext con PostgreSQL
+var connectionString = Environment.GetEnvironmentVariable("DATABASE_URL") 
+                      ?? builder.Configuration.GetConnectionString("AcademiaDb");
+
 builder.Services.AddDbContext<AcademiaContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("AcademiaDb"))
+    options.UseNpgsql(connectionString)
            .UseSnakeCaseNamingConvention() // Convención snake_case
 );
 
