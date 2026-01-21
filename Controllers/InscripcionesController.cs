@@ -169,21 +169,63 @@ namespace academia.Controllers
             {
                 // Verificar estudiante
                 var estudiante = await _context.Personas.FindAsync(inscripcionDto.IdEstudiante);
-                if (estudiante == null || estudiante.Rol != "estudiante")
+                if (estudiante == null)
                     return BadRequest(ApiResponse<InscripcionDto>.ErrorResponse("Estudiante no encontrado"));
+                
+                if (estudiante.Rol?.ToLower() != "estudiante")
+                    return BadRequest(ApiResponse<InscripcionDto>.ErrorResponse("La persona seleccionada no es un estudiante"));
 
                 // Verificar clase
-                var clase = await _context.Clases.FindAsync(inscripcionDto.IdClase);
+                var clase = await _context.Clases
+                    .Include(c => c.EstiloDanza)
+                    .FirstOrDefaultAsync(c => c.IdClase == inscripcionDto.IdClase);
+                    
                 if (clase == null)
                     return BadRequest(ApiResponse<InscripcionDto>.ErrorResponse("Clase no encontrada"));
 
-                // Verificar si ya está inscrito
-                var yaInscrito = await _context.Inscripciones
-                    .AnyAsync(i => i.IdEstudiante == inscripcionDto.IdEstudiante && 
-                                   i.IdClase == inscripcionDto.IdClase && 
-                                   i.Estado.ToLower() == "activa");
-                if (yaInscrito)
-                    return BadRequest(ApiResponse<InscripcionDto>.ErrorResponse("El estudiante ya está inscrito en esta clase"));
+                if (!clase.Activa)
+                    return BadRequest(ApiResponse<InscripcionDto>.ErrorResponse("La clase no está activa. No se pueden crear nuevas inscripciones"));
+
+                // Verificar si ya está inscrito en esta clase (activa)
+                var inscripcionExistente = await _context.Inscripciones
+                    .FirstOrDefaultAsync(i => i.IdEstudiante == inscripcionDto.IdEstudiante && 
+                                             i.IdClase == inscripcionDto.IdClase && 
+                                             i.Estado.ToLower() == "activa");
+                                             
+                if (inscripcionExistente != null)
+                    return BadRequest(ApiResponse<InscripcionDto>.ErrorResponse(
+                        $"El estudiante {estudiante.Nombre} {estudiante.Apellido} ya está inscrito en la clase {clase.NombreClase}"));
+
+                // Verificar cupo disponible en la clase
+                var inscripcionesActivas = await _context.Inscripciones
+                    .CountAsync(i => i.IdClase == inscripcionDto.IdClase && i.Estado.ToLower() == "activa");
+                    
+                if (clase.CapacidadMax > 0 && inscripcionesActivas >= clase.CapacidadMax)
+                    return BadRequest(ApiResponse<InscripcionDto>.ErrorResponse(
+                        $"La clase {clase.NombreClase} ha alcanzado su cupo máximo ({clase.CapacidadMax} estudiantes)"));
+
+                // Verificar si el estudiante tiene inscripciones activas en el mismo horario
+                var inscripcionesEstudiante = await _context.Inscripciones
+                    .Include(i => i.Clase)
+                    .Where(i => i.IdEstudiante == inscripcionDto.IdEstudiante && 
+                               i.Estado.ToLower() == "activa")
+                    .ToListAsync();
+
+                var conflictoHorario = inscripcionesEstudiante.Any(i => 
+                    i.Clase != null && 
+                    i.Clase.DiaSemana?.ToLower() == clase.DiaSemana?.ToLower() && 
+                    i.Clase.Hora == clase.Hora);
+
+                if (conflictoHorario)
+                {
+                    var claseConflicto = inscripcionesEstudiante
+                        .First(i => i.Clase != null && 
+                                   i.Clase.DiaSemana?.ToLower() == clase.DiaSemana?.ToLower() && 
+                                   i.Clase.Hora == clase.Hora)
+                        .Clase;
+                    return BadRequest(ApiResponse<InscripcionDto>.ErrorResponse(
+                        $"El estudiante ya tiene una clase inscrita el {clase.DiaSemana} a las {clase.Hora} ({claseConflicto?.NombreClase})"));
+                }
 
                 var inscripcion = _mappingService.ToEntity(inscripcionDto);
                 _context.Inscripciones.Add(inscripcion);
@@ -191,9 +233,14 @@ namespace academia.Controllers
 
                 await _context.Entry(inscripcion).Reference(i => i.Estudiante).LoadAsync();
                 await _context.Entry(inscripcion).Reference(i => i.Clase).LoadAsync();
+                if (inscripcion.Clase != null)
+                {
+                    await _context.Entry(inscripcion.Clase).Reference(c => c.EstiloDanza).LoadAsync();
+                }
 
                 return CreatedAtAction(nameof(GetInscripcion), new { id = inscripcion.IdInsc },
-                    ApiResponse<InscripcionDto>.SuccessResponse(_mappingService.ToDto(inscripcion), "Inscripción creada"));
+                    ApiResponse<InscripcionDto>.SuccessResponse(_mappingService.ToDto(inscripcion), 
+                        $"Inscripción creada exitosamente. {estudiante.Nombre} {estudiante.Apellido} inscrito en {clase.NombreClase}"));
             }
             catch (Exception ex)
             {
@@ -327,10 +374,17 @@ namespace academia.Controllers
                     .ThenInclude(c => c!.EstiloDanza)
                 .AsQueryable();
 
+            // Filtros de fecha - las fechas vienen en UTC desde el frontend
             if (fechaInicio.HasValue)
-                query = query.Where(i => i.FechaInsc >= DateTime.SpecifyKind(fechaInicio.Value.Date, DateTimeKind.Utc));
+            {
+                var fechaInicioUtc = DateTime.SpecifyKind(fechaInicio.Value, DateTimeKind.Utc);
+                query = query.Where(i => i.FechaInsc >= fechaInicioUtc);
+            }
             if (fechaFin.HasValue)
-                query = query.Where(i => i.FechaInsc < DateTime.SpecifyKind(fechaFin.Value.Date.AddDays(1), DateTimeKind.Utc));
+            {
+                var fechaFinUtc = DateTime.SpecifyKind(fechaFin.Value, DateTimeKind.Utc);
+                query = query.Where(i => i.FechaInsc <= fechaFinUtc);
+            }
             if (idClase.HasValue)
                 query = query.Where(i => i.IdClase == idClase.Value);
             if (!string.IsNullOrEmpty(estado))

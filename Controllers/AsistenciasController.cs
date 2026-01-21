@@ -42,6 +42,7 @@ namespace academia.Controllers
             [FromQuery] DateTime? fechaFin = null,
             [FromQuery] int? idEstudiante = null,
             [FromQuery] int? idClase = null,
+            [FromQuery] int? idInscripcion = null,
             [FromQuery] string? estadoAsis = null)
         {
             try
@@ -58,14 +59,30 @@ namespace academia.Controllers
                     query = query.Where(a => a.Clase!.IdProfesor == idPersona);
                 }
 
+                // Filtros de fecha - las fechas vienen en UTC desde el frontend
                 if (fechaInicio.HasValue)
-                    query = query.Where(a => a.FechaAsis >= DateTime.SpecifyKind(fechaInicio.Value.Date, DateTimeKind.Utc));
+                {
+                    var fechaInicioUtc = DateTime.SpecifyKind(fechaInicio.Value, DateTimeKind.Utc);
+                    query = query.Where(a => a.FechaAsis >= fechaInicioUtc);
+                }
                 if (fechaFin.HasValue)
-                    query = query.Where(a => a.FechaAsis < DateTime.SpecifyKind(fechaFin.Value.Date.AddDays(1), DateTimeKind.Utc));
+                {
+                    var fechaFinUtc = DateTime.SpecifyKind(fechaFin.Value, DateTimeKind.Utc);
+                    query = query.Where(a => a.FechaAsis <= fechaFinUtc);
+                }
                 if (idEstudiante.HasValue)
                     query = query.Where(a => a.IdEstudiante == idEstudiante.Value);
                 if (idClase.HasValue)
                     query = query.Where(a => a.IdClase == idClase.Value);
+                if (idInscripcion.HasValue)
+                {
+                    // Obtener la inscripción para filtrar por estudiante y clase
+                    var inscripcion = await _context.Inscripciones.FindAsync(idInscripcion.Value);
+                    if (inscripcion != null)
+                    {
+                        query = query.Where(a => a.IdEstudiante == inscripcion.IdEstudiante && a.IdClase == inscripcion.IdClase);
+                    }
+                }
                 if (!string.IsNullOrEmpty(estadoAsis))
                     query = query.Where(a => a.EstadoAsis.ToLower() == estadoAsis.ToLower());
 
@@ -392,11 +409,12 @@ namespace academia.Controllers
             [FromQuery] DateTime? fechaFin = null,
             [FromQuery] int? idEstudiante = null,
             [FromQuery] int? idClase = null,
+            [FromQuery] int? idInscripcion = null,
             [FromQuery] string? estadoAsis = null)
         {
             try
             {
-                var asistencias = await ObtenerAsistenciasParaReporte(fechaInicio, fechaFin, idEstudiante, idClase, estadoAsis);
+                var asistencias = await ObtenerAsistenciasParaReporte(fechaInicio, fechaFin, idEstudiante, idClase, idInscripcion, estadoAsis);
 
                 var csv = new System.Text.StringBuilder();
                 // BOM para Excel y separador punto y coma para mejor compatibilidad
@@ -430,11 +448,12 @@ namespace academia.Controllers
             [FromQuery] DateTime? fechaFin = null,
             [FromQuery] int? idEstudiante = null,
             [FromQuery] int? idClase = null,
+            [FromQuery] int? idInscripcion = null,
             [FromQuery] string? estadoAsis = null)
         {
             try
             {
-                var asistencias = await ObtenerAsistenciasParaReporte(fechaInicio, fechaFin, idEstudiante, idClase, estadoAsis);
+                var asistencias = await ObtenerAsistenciasParaReporte(fechaInicio, fechaFin, idEstudiante, idClase, idInscripcion, estadoAsis);
                 var html = GenerarHtmlReporteAsistencias(asistencias, fechaInicio, fechaFin);
                 var bytes = System.Text.Encoding.UTF8.GetBytes(html);
                 return File(bytes, "text/html; charset=utf-8", $"reporte_asistencias_{DateTime.Now:yyyyMMdd}.html");
@@ -517,11 +536,12 @@ namespace academia.Controllers
             [FromQuery] DateTime? fechaFin = null,
             [FromQuery] int? idEstudiante = null,
             [FromQuery] int? idClase = null,
+            [FromQuery] int? idInscripcion = null,
             [FromQuery] string? estadoAsis = null)
         {
             try
             {
-                var asistencias = await ObtenerAsistenciasParaReporte(fechaInicio, fechaFin, idEstudiante, idClase, estadoAsis);
+                var asistencias = await ObtenerAsistenciasParaReporte(fechaInicio, fechaFin, idEstudiante, idClase, idInscripcion, estadoAsis);
                 var asistenciasDto = asistencias.Select(a => _mappingService.ToDto(a));
 
                 var json = System.Text.Json.JsonSerializer.Serialize(asistenciasDto, new System.Text.Json.JsonSerializerOptions 
@@ -540,11 +560,12 @@ namespace academia.Controllers
         }
 
         private async Task<List<Asistencia>> ObtenerAsistenciasParaReporte(
-            DateTime? fechaInicio, DateTime? fechaFin, int? idEstudiante, int? idClase, string? estadoAsis)
+            DateTime? fechaInicio, DateTime? fechaFin, int? idEstudiante, int? idClase, int? idInscripcion, string? estadoAsis)
         {
             IQueryable<Asistencia> query = _context.Asistencias
                 .Include(a => a.Estudiante)
-                .Include(a => a.Clase);
+                .Include(a => a.Clase)
+                    .ThenInclude(c => c!.EstiloDanza);
 
             if (!EsAdministrador())
             {
@@ -552,14 +573,30 @@ namespace academia.Controllers
                 query = query.Where(a => a.Clase!.IdProfesor == idPersona);
             }
 
+            // Filtros de fecha - las fechas vienen en UTC desde el frontend
             if (fechaInicio.HasValue)
-                query = query.Where(a => a.FechaAsis >= DateTime.SpecifyKind(fechaInicio.Value.Date, DateTimeKind.Utc));
+            {
+                var fechaInicioUtc = DateTime.SpecifyKind(fechaInicio.Value, DateTimeKind.Utc);
+                query = query.Where(a => a.FechaAsis >= fechaInicioUtc);
+            }
             if (fechaFin.HasValue)
-                query = query.Where(a => a.FechaAsis < DateTime.SpecifyKind(fechaFin.Value.Date.AddDays(1), DateTimeKind.Utc));
+            {
+                var fechaFinUtc = DateTime.SpecifyKind(fechaFin.Value, DateTimeKind.Utc);
+                query = query.Where(a => a.FechaAsis <= fechaFinUtc);
+            }
             if (idEstudiante.HasValue)
                 query = query.Where(a => a.IdEstudiante == idEstudiante.Value);
             if (idClase.HasValue)
                 query = query.Where(a => a.IdClase == idClase.Value);
+            if (idInscripcion.HasValue)
+            {
+                // Obtener la inscripción para filtrar por estudiante y clase
+                var inscripcion = await _context.Inscripciones.FindAsync(idInscripcion.Value);
+                if (inscripcion != null)
+                {
+                    query = query.Where(a => a.IdEstudiante == inscripcion.IdEstudiante && a.IdClase == inscripcion.IdClase);
+                }
+            }
             if (!string.IsNullOrEmpty(estadoAsis))
                 query = query.Where(a => a.EstadoAsis.ToLower() == estadoAsis.ToLower());
 
